@@ -1,49 +1,44 @@
 {-# LANGUAGE DataKinds           #-}
-{-# LANGUAGE DeriveAnyClass      #-}
-{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE NoImplicitPrelude   #-}
-{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell     #-}
 {-# LANGUAGE TypeApplications    #-}
 {-# LANGUAGE TypeFamilies        #-}
 {-# LANGUAGE TypeOperators       #-}
+{-# LANGUAGE OverloadedStrings   #-}
 
-{-# OPTIONS_GHC -fno-warn-unused-imports #-}
 
-module Week02.Homework2 where
+module Week02.TGTemp where
 
 import           Control.Monad        hiding (fmap)
-import           Data.Aeson           (FromJSON, ToJSON)
 import           Data.Map             as Map
 import           Data.Text            (Text)
 import           Data.Void            (Void)
-import           GHC.Generics         (Generic)
 import           Plutus.Contract
+import           PlutusTx             (Data (..))
 import qualified PlutusTx
+import qualified PlutusTx.Builtins    as Builtins
 import           PlutusTx.Prelude     hiding (Semigroup(..), unless)
 import           Ledger               hiding (singleton)
 import           Ledger.Constraints   as Constraints
 import qualified Ledger.Typed.Scripts as Scripts
 import           Ledger.Ada           as Ada
-import           Playground.Contract  (printJson, printSchemas, ensureKnownCurrencies, stage, ToSchema)
+import           Playground.Contract  (printJson, printSchemas, ensureKnownCurrencies, stage)
 import           Playground.TH        (mkKnownCurrencies, mkSchemaDefinitions)
 import           Playground.Types     (KnownCurrency (..))
-import           Prelude              (IO, Semigroup (..), String, undefined)
+import           Prelude              (IO, Semigroup (..), String)
 import           Text.Printf          (printf)
 
-data MyRedeemer = MyRedeemer
-    { flag1 :: Bool
-    , flag2 :: Bool
-    } deriving (Generic, FromJSON, ToJSON, ToSchema)
+{-# OPTIONS_GHC -fno-warn-unused-imports #-}
+
+newtype MyRedeemer = MyRedeemer Integer
 
 PlutusTx.unstableMakeIsData ''MyRedeemer
 
 {-# INLINABLE mkValidator #-}
--- This should validate if and only if the two Booleans in the redeemer are equal!
 mkValidator :: () -> MyRedeemer -> ScriptContext -> Bool
-mkValidator _ (MyRedeemer b1 b2) _ = traceIfFalse "bolls unequal" (b1 == b2)
+mkValidator _ (MyRedeemer r) _ = traceIfFalse "wrong redeemer" (r == 42)
 
 data Typed
 instance Scripts.ValidatorTypes Typed where
@@ -52,10 +47,10 @@ instance Scripts.ValidatorTypes Typed where
 
 typedValidator :: Scripts.TypedValidator Typed
 typedValidator = Scripts.mkTypedValidator @Typed
-    $$(PlutusTx.compile [|| mkValidator ||])
-    $$(PlutusTx.compile [|| wrap ||])
-  where
-    wrap = Scripts.wrapValidator @() @MyRedeemer
+  $$(PlutusTx.compile [|| mkValidator ||])
+  $$(PlutusTx.compile [|| wrap ||])
+    where
+      wrap = Scripts.wrapValidator @() @MyRedeemer
 
 validator :: Validator
 validator = Scripts.validatorScript typedValidator
@@ -68,7 +63,7 @@ scrAddress = scriptAddress validator
 
 type GiftSchema =
             Endpoint "give" Integer
-        .\/ Endpoint "grab" MyRedeemer
+        .\/ Endpoint "grab" Integer
 
 give :: AsContractError e => Integer -> Contract w s e ()
 give amount = do
@@ -77,14 +72,14 @@ give amount = do
     void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
     logInfo @String $ printf "made a gift of %d lovelace" amount
 
-grab :: forall w s e. AsContractError e => MyRedeemer -> Contract w s e ()
+grab :: forall w s e. AsContractError e => Integer -> Contract w s e ()
 grab r = do
     utxos <- utxosAt scrAddress
     let orefs   = fst <$> Map.toList utxos
         lookups = Constraints.unspentOutputs utxos      <>
                   Constraints.otherScript validator
         tx :: TxConstraints Void Void
-        tx      = mconcat [mustSpendScriptOutput oref $ Redeemer $ PlutusTx.toBuiltinData r | oref <- orefs]
+        tx      = mconcat [mustSpendScriptOutput oref $ Redeemer $ PlutusTx.toBuiltinData (MyRedeemer r) | oref <- orefs]
     ledgerTx <- submitTxConstraintsWith @Void lookups tx
     void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
     logInfo @String $ "collected gifts"
@@ -98,3 +93,4 @@ endpoints = awaitPromise (give' `select` grab') >> endpoints
 mkSchemaDefinitions ''GiftSchema
 
 mkKnownCurrencies []
+
