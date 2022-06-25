@@ -155,6 +155,8 @@ grabHoly = do
         Nothing -> False
         Just d  -> beneficiary d == pkh && deadline d <= now
 
+-- if an endpoints throws an error the all the other endpoints might be blocked?
+-- because it would never reach the `>> endpoints` in the Contract monad
 endpoints :: Contract () GiftSchema Text ()
 endpoints = awaitPromise (((give' `select` grab') `select` grabFuck') `select` grabHoly') >> endpoints
   where
