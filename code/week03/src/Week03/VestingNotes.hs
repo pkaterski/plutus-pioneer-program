@@ -15,7 +15,7 @@ module Week03.VestingTemp where
 import           Control.Monad        hiding (fmap)
 import           Data.Aeson           (ToJSON, FromJSON)
 import           Data.Map             as Map
-import           Data.Text            (Text)
+import           Data.Text            (Text, unpack)
 import           Data.Void            (Void)
 import           GHC.Generics         (Generic)
 import           Plutus.Contract
@@ -53,6 +53,8 @@ mkValidator dat () ctx = traceIfFalse "beneficiary's signature missing" signedBy
     signedByBeneficiary :: Bool
     signedByBeneficiary = txSignedBy info $ unPaymentPubKeyHash $ beneficiary dat
 
+    -- the transaction seems to be submitted when it reaches its valid interval
+    -- so it seems that this cannot be exploted by providing an interval far into the future
     deadlineReached :: Bool
     deadlineReached = contains (from $ deadline dat) $ txInfoValidRange info
 
@@ -87,7 +89,7 @@ data GiveParams = GiveParams
 type GiftSchema =
             Endpoint "give" GiveParams
         .\/ Endpoint "grab" ()
-        .\/ Endpoint "grabFuck" ()
+        .\/ Endpoint "grabFuture" ()
         .\/ Endpoint "grabHoly" ()
 
 give :: AsContractError e => GiveParams -> Contract w s e ()
@@ -103,6 +105,7 @@ give gp = do
     (gpAmount gp)
     (show $ gpDeadline gp)
 
+-- doesn't filter the valid utxos but provied validity interval from now to ∞
 grab :: forall w s e. AsContractError e => Contract w s e ()
 grab = do
     now   <- currentTime
@@ -117,19 +120,25 @@ grab = do
     void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
     logInfo @String $ "collected gifts"
 
-grabFuck :: forall w s e. AsContractError e => Contract w s e ()
-grabFuck = do
-    now <- currentTime
+-- tries to grab funds and sets its own validity interval from 10 slots in the future
+grabFuture :: forall w s e. AsContractError e => Contract w s e ()
+grabFuture = do
+    now   <- currentTime
     utxos <- utxosAt scrAddress
     let orefs   = fst <$> Map.toList utxos
         lookups = Constraints.unspentOutputs utxos      <>
                   Constraints.otherScript validator
         tx :: TxConstraints Void Void
-        tx      = mconcat [Constraints.mustSpendScriptOutput oref unitRedeemer | oref <- orefs]
+        tx      = mconcat [Constraints.mustSpendScriptOutput oref unitRedeemer | oref <- orefs] <>
+                      -- submits a transaction to be executed in the future
+                      -- too far in the future may be forbidden?
+                      Constraints.mustValidateIn (from $ now + 10000)
     ledgerTx <- submitTxConstraintsWith @Void lookups tx
     void $ awaitTxConfirmed $ getCardanoTxId ledgerTx
     logInfo @String $ "collected gifts"
 
+-- searches only for valid utxos (with valid signature and deadline passed)
+-- and only tries to spend them
 grabHoly :: forall w s e. AsContractError e => Contract w s e ()
 grabHoly = do
     now   <- currentTime
@@ -155,16 +164,31 @@ grabHoly = do
         Nothing -> False
         Just d  -> beneficiary d == pkh && deadline d <= now
 
--- if an endpoints throws an error the all the other endpoints might be blocked?
+-- if an endpoints throws an error all the other endpoints might be blocked?
 -- because it would never reach the `>> endpoints` in the Contract monad
-endpoints :: Contract () GiftSchema Text ()
-endpoints = awaitPromise (((give' `select` grab') `select` grabFuck') `select` grabHoly') >> endpoints
+endpoints' :: Contract () GiftSchema Text ()
+endpoints' = awaitPromise (((give' `select` grab') `select` grabFuture') `select` grabHoly') >> endpoints'
   where
-    grab' = endpoint @"grab" $ const grab
-    give' = endpoint @"give" give
-    grabFuck' = endpoint @"grabFuck" $ const grabFuck
-    grabHoly' = endpoint @"grabHoly" $ const grabHoly
+    grab'       = endpoint @"grab" $ const grab
+    give'       = endpoint @"give" give
+    grabFuture' = endpoint @"grabFuture" $ const grabFuture
+    grabHoly'   = endpoint @"grabHoly" $ const grabHoly
+
+instance AsContractError Void
+
+-- handle errors so that all the endpoints don't get blocked because of a previous error
+endpoints :: Contract () GiftSchema Text ()
+endpoints = do
+    void $ awaitPromise $ give' `select` grab' `select` grabFuture' `select` grabHoly'
+    endpoints
+  where
+    noError     = handleError (\err -> logError @String $ "ERROR: " ++ unpack err)
+    grab'       = endpoint @"grab"       $ noError . const grab
+    give'       = endpoint @"give"       $ noError . give
+    grabFuture' = endpoint @"grabFuture" $ noError . const grabFuture
+    grabHoly'   = endpoint @"grabHoly"   $ noError . const grabHoly
 
 mkSchemaDefinitions ''GiftSchema
 
 mkKnownCurrencies []
+
