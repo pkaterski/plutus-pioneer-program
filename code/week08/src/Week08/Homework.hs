@@ -13,7 +13,7 @@
 
 {-# OPTIONS_GHC -g -fplugin-opt PlutusTx.Plugin:coverage-all #-}
 
-module Week08.TokenSaleFixed
+module Week08.Homework
     ( TokenSale (..)
     , TSRedeemer (..)
     , tsCovIdx

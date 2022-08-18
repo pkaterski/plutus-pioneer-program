@@ -15,6 +15,7 @@ library
                      , Week08.QuickCheck
                      , Week08.TokenSale
                      , Week08.TokenSaleFixed
+                     , Week08.Homework
                      , Week08.TokenSaleWithClose
   build-depends:       aeson
                      , ansi-terminal
