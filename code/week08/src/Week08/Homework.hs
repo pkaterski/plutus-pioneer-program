@@ -40,7 +40,7 @@ import           Ledger.Ada                   as Ada
 import           Ledger.Constraints           as Constraints
 import qualified Ledger.Typed.Scripts         as Scripts
 import           Ledger.Value
-import           Prelude                      (Semigroup (..), Show (..), uncurry)
+import           Prelude                      (Semigroup (..), Show (..))
 import qualified Prelude
 
 data TokenSale = TokenSale
@@ -182,17 +182,14 @@ useEndpoints' :: ( HasEndpoint "set price" Integer s
                  , HasEndpoint "withdraw" (Integer, Integer) s
                  )
               => TokenSale
-              -> Contract () s Text ()
-useEndpoints' ts = forever
-                $ handleError logError
-                $ awaitPromise
-                $ setPrice' `select` closeTS' `select` addTokens' `select` buyTokens' `select` withdraw'
+              -> Promise () s Text ()
+useEndpoints' ts =setPrice' `select` closeTS' `select` addTokens' `select` buyTokens' `select` withdraw' 
   where
-    setPrice'  = endpoint @"set price"  $ setPrice ts
-    closeTS'   = endpoint @"close"      $ const $ closeTS ts
-    addTokens' = endpoint @"add tokens" $ addTokens ts
-    buyTokens' = endpoint @"buy tokens" $ buyTokens ts
-    withdraw'  = endpoint @"withdraw"   $ Prelude.uncurry $ withdraw ts
+    setPrice'  = endpoint @"set price"  $ \p      -> handleError logError (setPrice ts p)
+    addTokens' = endpoint @"add tokens" $ \n      -> handleError logError (addTokens ts n)
+    buyTokens' = endpoint @"buy tokens" $ \n      -> handleError logError (buyTokens ts n)
+    withdraw'  = endpoint @"withdraw"   $ \(n, l) -> handleError logError (withdraw ts n l)
+    closeTS'   = endpoint @"close"      $ \()     -> handleError logError (closeTS ts)
 
 useEndpoints :: TokenSale -> Contract () TSUseSchema Text ()
-useEndpoints = useEndpoints'
+useEndpoints = forever . awaitPromise . useEndpoints'

@@ -16,7 +16,7 @@
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
 
-module Spec.Model
+module Spec.ModelHomework
     ( tests
     , test
     , TSModel (..)
@@ -44,10 +44,13 @@ import           Test.Tasty.QuickCheck
 
 import           Week08.Homework                              (TokenSale (..), TSStartSchema, TSUseSchema, startEndpoint, useEndpoints')
 
-type TSUseSchema' = TSUseSchema .\/ Endpoint "init" TokenSale
+type TSUseSchema' = TSUseSchema .\/ Endpoint "init" TokenSale .\/ Endpoint "kill" ()
 
 useEndpoints'' :: Contract () TSUseSchema' Text ()
-useEndpoints'' = awaitPromise $ endpoint @"init" useEndpoints'
+useEndpoints'' = awaitPromise $ endpoint @"init" go
+  where
+    go :: TokenSale -> Contract () TSUseSchema' Text ()
+    go ts = awaitPromise $ (useEndpoints' ts `promiseBind` \() -> go ts) `select` (endpoint @"kill" $ \() -> useEndpoints'')
 
 data TSState = TSState
     { _tssPrice    :: !Integer
@@ -122,18 +125,16 @@ instance ContractModel TSModel where
         when (v == w) $
             (tsModel . ix v . tssPrice) $= p
     nextState (Close v w) = do
-        wait 3
+        wait 4
         when (v == w) $ do
             m <- getTSState v
             case m of
                 Just t -> do
-                  -- deposit all the tokens to v
-                  -- deposit all the lovelace to v
-                  -- deposit w $ assetClassValue (tokens Map.! v) n
-                  -- remove all the lovelace from the contract
-                  -- remove all the tokens from the contract
-                  pure ()
-                _ -> pure ()
+                    deposit w $ lovelaceValueOf (t ^. tssLovelace)               <>
+                                assetClassValue (tokens Map.! w) (t ^. tssToken) <>
+                                Ada.toValue minAdaTxOut
+                    (tsModel . at v) $= Nothing
+                _ -> return ()
     nextState (AddTokens v w n) = do
         wait 3
         started <- hasStarted v                                     -- has the token sale started?
@@ -189,6 +190,11 @@ instance ContractModel TSModel where
     perform h _ m (AddTokens v w n)  = withWait m $ callEndpoint @"add tokens" (h $ UseKey v w) n
     perform h _ m (BuyTokens v w n)  = withWait m $ callEndpoint @"buy tokens" (h $ UseKey v w) n
     perform h _ m (Withdraw v w n l) = withWait m $ callEndpoint @"withdraw"   (h $ UseKey v w) (n, l)
+    perform h _ m (Close v w)        = do
+        withWait m $ callEndpoint @"close" (h $ UseKey v w) ()
+        when (v == w) $ forM_ wallets $ \w' ->
+            callEndpoint @"kill" (h $ UseKey v w') ()
+        delay 1
 
 withWait :: ModelState TSModel -> SpecificationEmulatorTrace () -> SpecificationEmulatorTrace ()
 withWait m c = void $ c >> waitUntilSlot ((m ^. Test.currentSlot) + 3)
